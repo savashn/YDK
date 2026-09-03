@@ -2,7 +2,7 @@
 
 A PowerShell script that sets up scheduled tasks to take shadow copy snapshots of your disks using Windows' Volume Shadow Copy Service (VSS).
 
-> [!DANGER]
+> [!CAUTION]
 > This script might have unnoticed side-effects at its current early stage.
 > Do not use it on your clients' computers before you have tested it on a VM.
 
