@@ -30,11 +30,6 @@ param(
     [Parameter(ParameterSetName = 'Install')]
     [string[]] $Volume = @('C', 'D'),
 
-    [Parameter(ParameterSetName = 'Snapshot')]
-    [Parameter(ParameterSetName = 'Install')]
-    [ValidateRange(0, 512)]
-    [int] $KeepPerVolume = 0,
-
     [Parameter(ParameterSetName = 'Install')]
     [string[]] $Time = @('10:00', '13:00', '16:00'),
 
@@ -210,7 +205,6 @@ function Install-YdkTask {
         [Parameter(Mandatory)][string]   $SelfPath,
         [Parameter(Mandatory)][string[]] $TaskTime,
         [Parameter(Mandatory)][string[]] $TaskVolume,
-        [Parameter(Mandatory)][int]      $Keep,
         [Parameter(Mandatory)][int]      $LogDays,
         [Parameter(Mandatory)][string]   $Prefix
     )
@@ -236,8 +230,7 @@ function Install-YdkTask {
     # script split the string itself (see the top of this file). Do not change
     # this to space-separated arguments.
     $scriptArgs = @('-Volume', ($TaskVolume -join ','))
-    if ($Keep -gt 0)          { $scriptArgs += @('-KeepPerVolume', $Keep) }
-    if ($LogDays -ne 90)      { $scriptArgs += @('-LogRetentionDays', $LogDays) }
+    if ($LogDays -ne 90) { $scriptArgs += @('-LogRetentionDays', $LogDays) }
 
     $argument = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" {1}' -f
                 $SelfPath, ($scriptArgs -join ' ')
@@ -847,47 +840,10 @@ function New-ShadowCopy {
     }
 }
 
-function Remove-OldShadowCopy {
-    <# Keeps the $Keep most recent snapshots of a volume and deletes the rest. #>
-    [CmdletBinding(SupportsShouldProcess = $true)]
-    param(
-        [Parameter(Mandatory)][string] $VolumeRoot,
-        [Parameter(Mandatory)][int]    $Keep
-    )
-
-    if ($Keep -le 0) { return }
-
-    $vol = Get-CimInstance -ClassName Win32_Volume `
-                           -Filter ("Name = '{0}'" -f $VolumeRoot.Replace('\', '\\')) -ErrorAction Stop
-    if (-not $vol) { return }
-
-    $shadows = @(Get-CimInstance -ClassName Win32_ShadowCopy -ErrorAction Stop |
-                 Where-Object { $_.VolumeName -eq $vol.DeviceID } |
-                 Sort-Object InstallDate -Descending)
-
-    if ($shadows.Count -le $Keep) {
-        Write-Log ("$VolumeRoot -> {0} snapshot(s) present, retention limit {1}; nothing to delete." -f $shadows.Count, $Keep)
-        return
-    }
-
-    foreach ($old in $shadows[$Keep..($shadows.Count - 1)]) {
-        $label = "$VolumeRoot snapshot $($old.ID) ($($old.InstallDate))"
-        if ($PSCmdlet.ShouldProcess($label, 'Delete')) {
-            try {
-                Remove-CimInstance -InputObject $old -ErrorAction Stop
-                Write-Log "Deleted old snapshot: $label"
-            } catch {
-                Write-Log "Could not delete old snapshot ($label): $($_.Exception.Message)" -Level WARN
-            }
-        }
-    }
-}
-
 function Invoke-Snapshot {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory)][string[]] $TargetVolume,
-        [Parameter(Mandatory)][int]      $Keep,
         [Parameter(Mandatory)][bool]     $FailMissing
     )
 
@@ -973,16 +929,14 @@ function Invoke-Snapshot {
         }
 
         if ($result.ReturnValue -eq 0) {
+            # Nothing is deleted here on purpose. Windows already drops the
+            # oldest shadow copies by itself once the volume's shadow storage
+            # cap or its MaxShadowCopies limit is reached, and a rule of our own
+            # would delete copies made by System Restore or a backup product
+            # just as happily. Use -ShadowStorageMaxSize or -MaxShadowCopies to
+            # set those ceilings.
             Write-Log "$root -> snapshot created. ShadowID: $($result.ShadowID)" -Level OK
             $succeeded.Add($root)
-
-            if ($Keep -gt 0) {
-                try {
-                    Remove-OldShadowCopy -VolumeRoot $root -Keep $Keep
-                } catch {
-                    Write-Log "$root -> pruning old snapshots failed: $($_.Exception.Message)" -Level WARN
-                }
-            }
         } else {
             $code = $result.ReturnValue
             $desc = if ($ShadowCopyReturnCode.ContainsKey($code)) { $ShadowCopyReturnCode[$code] } else { 'Undefined error code' }
@@ -1126,7 +1080,6 @@ switch ($PSCmdlet.ParameterSetName) {
         Install-YdkTask -SelfPath   $selfPath `
                         -TaskTime   $Time `
                         -TaskVolume $Volume `
-                        -Keep       $KeepPerVolume `
                         -LogDays    $LogRetentionDays `
                         -Prefix     $TaskPrefix
         exit 0
@@ -1169,7 +1122,6 @@ switch ($PSCmdlet.ParameterSetName) {
                           -RetentionDays $LogRetentionDays
 
         $failedCount = Invoke-Snapshot -TargetVolume $Volume `
-                                       -Keep         $KeepPerVolume `
                                        -FailMissing  ([bool] $FailOnMissingVolume)
 
         if ($failedCount -gt 0) { exit 1 }

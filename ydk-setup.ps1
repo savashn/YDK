@@ -41,7 +41,6 @@ param(
     # Passed straight through to "ydk.ps1 -Install" when given.
     [string[]] $Time,
     [string[]] $Volume,
-    [int]      $KeepPerVolume,
     [int]      $LogRetentionDays,
     [string]   $TaskPrefix,
 
@@ -84,7 +83,7 @@ if (-not $isAdmin) {
     foreach ($name in @('Destination', 'TaskPrefix')) {
         if ($PSBoundParameters.ContainsKey($name)) { $argList += @("-$name", ('"{0}"' -f $PSBoundParameters[$name])) }
     }
-    foreach ($name in @('KeepPerVolume', 'LogRetentionDays')) {
+    foreach ($name in @('LogRetentionDays')) {
         if ($PSBoundParameters.ContainsKey($name)) { $argList += @("-$name", $PSBoundParameters[$name]) }
     }
     foreach ($name in @('Time', 'Volume')) {
@@ -133,7 +132,7 @@ if ((Resolve-Path -LiteralPath $source).Path -ieq $target) {
 # Whatever the caller passed is handed over unchanged; ydk.ps1 owns every
 # decision from here on, including refusing a folder ordinary users can write to.
 $installArgs = @{}
-foreach ($name in @('Time', 'Volume', 'KeepPerVolume', 'LogRetentionDays', 'TaskPrefix')) {
+foreach ($name in @('Time', 'Volume', 'LogRetentionDays', 'TaskPrefix')) {
     if ($PSBoundParameters.ContainsKey($name)) { $installArgs[$name] = $PSBoundParameters[$name] }
 }
 

@@ -122,7 +122,6 @@ Options for detailed installation are listed below:
 |-------------------------|---------------------|-------------|
 | `-Time`                 | `10:00,13:00,16:00` | Daily run times (`HH:mm`). |
 | `-Volume`               | `C,D`               | Volume list written into the task. |
-| `-KeepPerVolume`        | `0`                 | Retention count written into the task. |
 | `-TaskPrefix`           | `YDK`               | Task name prefix (`YDK0`, `YDK1`, …). |
 | `-LogRetentionDays`     | `90`                | Written into the task, so scheduled runs use the same retention. |
 | `-ShadowStorageMaxSize` | *(unset)*           | Overrides the VSS storage cap per volume: `25GB`, `20%`, `UNBOUNDED`. Left alone if not passed. |
@@ -133,7 +132,7 @@ Written out in full, those defaults are:
 
 ```powershell
 .\ydk.ps1 -Install -Time 10:00,13:00,16:00 `
-          -Volume C,D -KeepPerVolume 0 `
+          -Volume C,D `
           -TaskPrefix YDK -LogRetentionDays 90
 ```
 
@@ -151,9 +150,9 @@ or deleting anything.
 > cannot load the CIM module while a confirmation is pending, and the run fails
 > before it reaches the first volume. Use `-WhatIf` for a dry run instead.
 
-The `-Volume` and `-KeepPerVolume` values you pass to `-Install` are written into
-the task's command line, so the task runs with those settings every time. To
-change them, just run `-Install` again with the new values.
+The `-Volume` value you pass to `-Install` is written into the task's command
+line, so the task runs with that setting every time. To change it, just run
+`-Install` again with the new value.
 
 Install first removes the tasks it installed previously under the same prefix and
 then registers the new set, so running it again is safe: installing with fewer
@@ -175,8 +174,8 @@ powershell -ExecutionPolicy Bypass -File C:\YDK\ydk.ps1 -Install
 # Change the times and the volumes
 C:\YDK\ydk.ps1 -Install -Time '08:00','20:00' -Volume C
 
-# Keep the 10 most recent snapshots per volume and delete older ones
-C:\YDK\ydk.ps1 -Install -KeepPerVolume 10
+# Cap how much disk the snapshots may use, and how many are kept
+C:\YDK\ydk.ps1 -Install -ShadowStorageMaxSize 25GB -MaxShadowCopies 20
 
 # Show what would happen without installing anything
 C:\YDK\ydk.ps1 -Install -WhatIf
@@ -196,7 +195,6 @@ parameters, which is the same mode the scheduled task uses:
 cd C:\YDK
 .\ydk.ps1                                # default: C and D
 .\ydk.ps1 -Volume C                      # C: only
-.\ydk.ps1 -Volume C,D -KeepPerVolume 10
 .\ydk.ps1 -WhatIf                        # dry run, creates nothing
 ```
 
@@ -215,7 +213,6 @@ rather than failing silently.
 | Parameter              | Default               | Description |
 |------------------------|-----------------------|-------------|
 | `-Volume`              | `C,D`                 | Drives to snapshot. Accepts `C`, `C:` or `C:\`. |
-| `-KeepPerVolume`       | `0`                   | Snapshots to keep per volume. `0` = never prune. |
 | `-LogPath`             | `Logs\ydk-<date>.log` | Log file path. |
 | `-LogRetentionDays`    | `90`                  | Days of log files to keep. `0` = keep forever. |
 | `-FailOnMissingVolume` | off                   | Treat a missing volume as an error instead of a warning. |
@@ -223,7 +220,7 @@ rather than failing silently.
 Written out in full, those defaults are:
 
 ```powershell
-.\ydk.ps1 -Volume C,D -KeepPerVolume 0 `
+.\ydk.ps1 -Volume C,D `
           -LogPath Logs\ydk-$(Get-Date -Format yyyy-MM-dd).log `
           -LogRetentionDays 90
 ```
@@ -316,9 +313,11 @@ cmd /c rmdir C:\old
 - **This is not a backup.** Shadow copies are stored on the source disk itself.
   If the disk fails, is stolen, or ransomware encrypts it, the snapshots go with
   it. Keep a separate external/offline copy for disaster recovery.
-- When the shadow storage limit is reached Windows **deletes the oldest
-  snapshots by itself**. They will not pile up without bound even if you never
-  set `-KeepPerVolume`.
+- When the shadow storage limit or the per-volume copy limit is reached, Windows
+  **deletes the oldest snapshots by itself**; they never pile up without bound.
+  That is why this tool deletes no snapshots of its own: it cannot tell which
+  ones belong to System Restore or to a backup product. Use
+  `-ShadowStorageMaxSize` and `-MaxShadowCopies` to set those ceilings.
 - Snapshots are volume-level, not file-level; they freeze the whole disk at a
   moment in time rather than an individual file.
 
