@@ -105,7 +105,10 @@ The `-Volume` and `-KeepPerVolume` values you pass to `-Install` are written int
 the task's command line, so the task runs with those settings every time. To
 change them, just run `-Install` again with the new values.
 
-Install overwrites tasks of the same name, so running it again is safe.
+Install first removes the tasks it installed previously under the same prefix and
+then registers the new set, so running it again is safe: installing with fewer
+times than last time does not leave the extra tasks behind. Tasks it does not
+recognise as its own are never touched.
 
 > [!NOTE]
 > If you copied the file over a network share, by e-mail or through a browser,

@@ -83,6 +83,14 @@ $Volume = @($Volume |
             ForEach-Object { $_.Trim() } |
             Where-Object   { $_ })
 
+# -Time has exactly the same problem: "10:00,13:00" reaches the script as one
+# string in -File mode, and without splitting it here every one of those runs
+# fails with "Invalid time".
+$Time = @($Time |
+          ForEach-Object { $_ -split ',' } |
+          ForEach-Object { $_.Trim() } |
+          Where-Object   { $_ })
+
 # ===========================================================================
 # Shared helpers
 # ===========================================================================
@@ -175,7 +183,10 @@ function Install-YdkTask {
     # fall back to the single-string overload, which rejects even valid times.
     [string[]] $timeFormats = @('HH:mm', 'H:mm', 'HH:mm:ss')
 
-    $index = 0
+    # Parse EVERY time before touching the task store. Validating inside the
+    # registration loop instead would leave a half-installed schedule behind:
+    # "-Time 10:00,xx" would register YDK0 and only then abort.
+    $schedule = New-Object System.Collections.Generic.List[object]
     foreach ($t in $TaskTime) {
 
         [datetime] $parsed = [datetime]::MinValue
@@ -186,19 +197,40 @@ function Install-YdkTask {
             Exit-WithError "Invalid time: '$t'. Expected 'HH:mm' format (for example 21:00)."
         }
 
+        $schedule.Add([pscustomobject]@{ Text = $t; TimeOfDay = $parsed.TimeOfDay })
+    }
+
+    # Drop the tasks this tool already owns under this prefix. Without this an
+    # install with fewer times than the previous one leaves the extra tasks
+    # (YDK2 and up) behind, still firing on yesterday's schedule. The same
+    # Test-IsYdkTask guard as -Uninstall decides what may be removed, so a
+    # foreign task is never deleted here.
+    foreach ($old in @(Get-ScheduledTask -TaskPath '\' -ErrorAction SilentlyContinue |
+                       Where-Object { Test-IsYdkTask -Task $_ -Prefix $Prefix })) {
+        if ($PSCmdlet.ShouldProcess($old.TaskName, 'Remove the previously installed task')) {
+            Unregister-ScheduledTask -TaskName $old.TaskName -TaskPath '\' -Confirm:$false
+            Write-Host "Removed existing task '$($old.TaskName)'." -ForegroundColor Yellow
+        }
+    }
+
+    $index = 0
+    foreach ($item in $schedule) {
+
+        $t        = $item.Text
         $taskName = "$Prefix$index"
         $index++
 
         # TryParseExact leaves the date part at 0001-01-01; combine the time
         # with today's date so the trigger gets a valid start boundary.
-        $at = (Get-Date).Date.Add($parsed.TimeOfDay)
+        $at = (Get-Date).Date.Add($item.TimeOfDay)
         $trigger = New-ScheduledTaskTrigger -Daily -At $at
 
         if (-not $PSCmdlet.ShouldProcess($taskName, "Register daily task at $t")) { continue }
 
-        # Overwrite a task of the same name if one exists (including one left
-        # behind by the old BAT/VBS install). Scoped to the root folder so a
-        # same-named task living under \Microsoft\Windows\... is never touched.
+        # Our own tasks are already gone by now, so this only catches a
+        # same-named task we do not recognise - typically one left behind by the
+        # old BAT/VBS install. Scoped to the root folder so a same-named task
+        # living under \Microsoft\Windows\... is never touched.
         if (Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue) {
             Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false
             Write-Host "Removed existing task '$taskName' (it will be re-registered)." -ForegroundColor Yellow
@@ -251,6 +283,10 @@ function Test-IsYdkTask {
     if ($Task.Description -like 'YDK daily VSS snapshot*') { return $true }
 
     foreach ($a in @($Task.Actions)) {
+        # A task can come back with Actions = $null; under Set-StrictMode that
+        # would turn the property access below into a terminating error.
+        if ($null -eq $a) { continue }
+
         if ($a.PSObject.Properties.Name -contains 'Arguments' -and
             ($a.Arguments -like '*ydk.ps1*' -or $a.Arguments -like '*Yedek.ps1*')) { return $true }
     }
@@ -444,14 +480,25 @@ function Show-Status {
                     267009 { 'running' }
                     default { "FAILED ($($i.LastTaskResult))" }
                 }
+        # A task can have no trigger at all (edited by hand in Task Scheduler, or
+        # imported from a broken XML), and a trigger can carry an empty
+        # StartBoundary. Indexing Triggers[0] blindly turns the whole status
+        # report into "Cannot index into a null array", so read it defensively.
+        $trigger = @($t.Triggers) | Select-Object -First 1
+        $at = '-'
+        if ($trigger -and $trigger.StartBoundary) {
+            try   { $at = ([datetime] $trigger.StartBoundary).ToString('HH:mm') }
+            catch { $at = '?' }
+        }
+
         $colour = if ($res -like 'FAILED*') { 'Red' } else { 'Gray' }
         Write-Host ("  {0,-8} {1,-7} {2,-6} last={3,-17} result={4,-14} next={5}" -f
-                    $t.TaskName, $t.Principal.UserId,
-                    ([datetime]$t.Triggers[0].StartBoundary).ToString('HH:mm'),
+                    $t.TaskName, $t.Principal.UserId, $at,
                     $last, $res, $next) -ForegroundColor $colour
 
         if ($res -like 'FAILED*')    { $warn.Add("Task $($t.TaskName) last finished with result $($i.LastTaskResult) - check the log.") }
         if ($t.State -eq 'Disabled') { $warn.Add("Task $($t.TaskName) is disabled.") }
+        if (-not $trigger)           { $warn.Add("Task $($t.TaskName) has no trigger, so it never runs on its own.") }
     }
 
     # --- Snapshots and storage, per volume --------------------------------
@@ -866,6 +913,14 @@ function Invoke-Snapshot {
 $selfPath = if ($PSCommandPath) { $PSCommandPath } else { $null }
 $baseDir  = if ($PSScriptRoot)  { $PSScriptRoot }  else { (Get-Location).Path }
 
+# An empty -TaskPrefix would reach Test-IsYdkTask, whose -Prefix is mandatory,
+# and come back out as a raw parameter binding error in the middle of a task
+# listing. Reject it here instead, with the same exit code as any other bad
+# parameter.
+if ($PSCmdlet.ParameterSetName -ne 'Snapshot' -and [string]::IsNullOrWhiteSpace($TaskPrefix)) {
+    Exit-WithError 'The task prefix cannot be empty. Example: -TaskPrefix YDK'
+}
+
 switch ($PSCmdlet.ParameterSetName) {
 
     'Status' {
@@ -893,6 +948,16 @@ switch ($PSCmdlet.ParameterSetName) {
         }
         if (-not $selfPath) {
             Exit-WithError 'Could not determine the script''s own path; -Install requires the script to be run from a file.'
+        }
+
+        # Empty lists would otherwise surface as a parameter binding error from
+        # Install-YdkTask ("empty array"), or quietly register a task whose
+        # command line carries a bare "-Volume".
+        if ($Volume.Count -eq 0) {
+            Exit-WithError 'The volume list is empty. Example: -Volume C,D'
+        }
+        if ($Time.Count -eq 0) {
+            Exit-WithError 'The time list is empty. Example: -Time 10:00,13:00,16:00'
         }
 
         # Validate the volume list BEFORE writing it into a task. Without this a
@@ -952,7 +1017,14 @@ switch ($PSCmdlet.ParameterSetName) {
         # would report "could not write to the log" on every line.
         $logDir = Split-Path -Parent $script:LogFile
         if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
-            New-Item -ItemType Directory -Path $logDir -Force -WhatIf:$false | Out-Null
+            try {
+                New-Item -ItemType Directory -Path $logDir -Force -WhatIf:$false -ErrorAction Stop | Out-Null
+            } catch {
+                # A -LogPath pointing somewhere unwritable is a parameter
+                # problem, so report it as one instead of letting the raw
+                # New-Item error escape.
+                Exit-WithError "Could not create the log folder ('$logDir'): $($_.Exception.Message)"
+            }
         }
 
         if (-not (Test-Administrator)) {
