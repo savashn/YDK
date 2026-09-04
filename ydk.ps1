@@ -512,7 +512,19 @@ function Show-Status {
     $mcText    = 'not set (Windows default, 64)'
     $mc = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\VSS\Settings' `
                            -Name MaxShadowCopies -ErrorAction SilentlyContinue
-    if ($mc) { $maxCopies = [int] $mc.MaxShadowCopies; $mcText = "$maxCopies (overridden)" }
+    if ($mc) {
+        # The value is read from the registry, so it does not have to be one of
+        # ours: a 0 (or a garbage value) would otherwise divide by zero below and
+        # take the whole status report down with it.
+        $raw = 0
+        if ([int]::TryParse([string] $mc.MaxShadowCopies, [ref] $raw) -and $raw -gt 0) {
+            $maxCopies = $raw
+            $mcText    = "$maxCopies (overridden)"
+        } else {
+            $mcText = "$($mc.MaxShadowCopies) (overridden, but not a usable number - Windows will fall back to its own limit)"
+            $warn.Add("The MaxShadowCopies registry value is '$($mc.MaxShadowCopies)', which is not a usable limit.")
+        }
+    }
 
     if (-not $shadows) {
         Write-Host '  none' -ForegroundColor Yellow
@@ -802,8 +814,11 @@ function Invoke-Snapshot {
 
     Write-Log ('=' * 70)
     Write-Log "ydk.ps1 started. Computer: $env:COMPUTERNAME  User: $env:USERNAME"
-    Write-Log ("Operating system: {0} (build {1})" -f (Get-CimInstance Win32_OperatingSystem).Caption,
-                                                      [Environment]::OSVersion.Version.Build)
+    # Only a log header. If CIM cannot answer, that is worth noting but it is no
+    # reason to abort before a single volume has been tried.
+    $osName = 'unknown'
+    try { $osName = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption } catch { }
+    Write-Log ("Operating system: {0} (build {1})" -f $osName, [Environment]::OSVersion.Version.Build)
     Write-Log "Requested volumes: $($TargetVolume -join ', ')"
 
     Start-VssService
@@ -917,8 +932,18 @@ $baseDir  = if ($PSScriptRoot)  { $PSScriptRoot }  else { (Get-Location).Path }
 # and come back out as a raw parameter binding error in the middle of a task
 # listing. Reject it here instead, with the same exit code as any other bad
 # parameter.
-if ($PSCmdlet.ParameterSetName -ne 'Snapshot' -and [string]::IsNullOrWhiteSpace($TaskPrefix)) {
-    Exit-WithError 'The task prefix cannot be empty. Example: -TaskPrefix YDK'
+if ($PSCmdlet.ParameterSetName -ne 'Snapshot') {
+    if ([string]::IsNullOrWhiteSpace($TaskPrefix)) {
+        Exit-WithError 'The task prefix cannot be empty. Example: -TaskPrefix YDK'
+    }
+
+    # Task names cannot contain these characters. Checking here matters for
+    # -Install in particular: the previously installed tasks are removed before
+    # the new ones are registered, so a prefix that Register-ScheduledTask would
+    # reject halfway through would leave the machine with no tasks at all.
+    if ($TaskPrefix -match '[\\/:*?"<>|]') {
+        Exit-WithError "The task prefix ('$TaskPrefix') contains a character that is not allowed in a task name: \ / : * ? "" < > |"
+    }
 }
 
 switch ($PSCmdlet.ParameterSetName) {

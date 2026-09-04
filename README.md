@@ -101,6 +101,12 @@ which are limited to 10% of the disk and 64 snapshots maximum.
 `-WhatIf` works in the modes that change things: it shows what would happen without creating
 or deleting anything.
 
+> [!NOTE]
+> `-Confirm` only works in an interactive window. In a non-interactive session
+> (`powershell -NonInteractive`, which is how the scheduled task runs) PowerShell
+> cannot load the CIM module while a confirmation is pending, and the run fails
+> before it reaches the first volume. Use `-WhatIf` for a dry run instead.
+
 The `-Volume` and `-KeepPerVolume` values you pass to `-Install` are written into
 the task's command line, so the task runs with those settings every time. To
 change them, just run `-Install` again with the new values.
