@@ -43,6 +43,11 @@ param(
     [Parameter(ParameterSetName = 'Status')]
     [string] $TaskPrefix = 'YDK',
 
+    # -Install refuses to register a task for a script that non-administrators
+    # can overwrite. This switch installs anyway; see Get-UnsafeWriteAccess.
+    [Parameter(ParameterSetName = 'Install')]
+    [switch] $SkipLocationCheck,
+
     # Both of the following are unset by default: when not passed, Windows' own
     # VSS defaults (10% storage cap, 64 shadow copies per volume) are left alone.
     [Parameter(ParameterSetName = 'Install')]
@@ -124,6 +129,80 @@ function ConvertTo-VolumeRoot {
 # ===========================================================================
 # Install / uninstall
 # ===========================================================================
+
+function Get-UnsafeWriteAccess {
+    <# Lists the access rules that would let someone who is not an administrator
+       replace the given file, either directly or by writing in the folder that
+       holds it.
+
+       This is the one thing that decides whether the tool is safe to install on
+       a machine other people use: the scheduled task runs the script as SYSTEM,
+       so whoever can change the file can run their own code as SYSTEM. Folder
+       rights count as well - being able to create or delete files in the folder
+       is enough to swap the script out.
+
+       Note that a folder created directly under C:\ inherits an
+       "Authenticated Users: Modify" entry from the root, so C:\YDK is writable
+       by every logged-on user. C:\Program Files gives ordinary users read and
+       execute only, which is why that is the recommended location. #>
+    param([Parameter(Mandatory)][string] $Path)
+
+    # The identities that are supposed to have write access to program files.
+    $trusted = @(
+        'S-1-5-18',      # NT AUTHORITY\SYSTEM
+        'S-1-5-32-544',  # BUILTIN\Administrators
+        'S-1-3-0',       # CREATOR OWNER (applies to whoever creates a child item)
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'  # TrustedInstaller
+    )
+
+    # Rights that allow the file to be replaced. The two generic bits at the end
+    # (GENERIC_ALL and GENERIC_WRITE) are how inherited entries often show up.
+    $rights = [int] ([Security.AccessControl.FileSystemRights]::WriteData -bor
+                     [Security.AccessControl.FileSystemRights]::AppendData -bor
+                     [Security.AccessControl.FileSystemRights]::Delete -bor
+                     [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+                     [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+                     [Security.AccessControl.FileSystemRights]::TakeOwnership)
+    $mask = $rights -bor 0x10000000 -bor 0x40000000
+
+    $found = New-Object System.Collections.Generic.List[string]
+
+    foreach ($item in @($Path, (Split-Path -Parent $Path))) {
+        if (-not $item) { continue }
+
+        # Nothing to judge about a path that is not there. For -Install the
+        # script file always exists; this only skips a parent that does not.
+        if (-not (Test-Path -LiteralPath $item)) { continue }
+
+        try {
+            $acl = Get-Acl -LiteralPath $item -ErrorAction Stop
+        } catch {
+            # Being unable to read the permissions is itself a reason to stop.
+            $found.Add("$item - permissions could not be read: $($_.Exception.Message)")
+            continue
+        }
+
+        foreach ($ace in $acl.Access) {
+            if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+
+            # An inherit-only entry does not grant anything on this item itself.
+            if (($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+
+            if (([int] $ace.FileSystemRights -band $mask) -eq 0) { continue }
+
+            $sid = $null
+            try { $sid = $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { }
+            if ($sid -and ($trusted -contains $sid)) { continue }
+
+            # CAUTION: the extra pair of parentheses is required. Inside a method
+            # call the commas would otherwise separate arguments to Add(), and
+            # the format string would be left with a single value to fill in.
+            $found.Add(("{0} - {1} : {2}" -f $item, $ace.IdentityReference, $ace.FileSystemRights))
+        }
+    }
+
+    return $found
+}
 
 function Install-YdkTask {
     [CmdletBinding(SupportsShouldProcess = $true)]
@@ -992,6 +1071,33 @@ switch ($PSCmdlet.ParameterSetName) {
         foreach ($item in $Volume) {
             try { $null = ConvertTo-VolumeRoot -Value $item }
             catch { Exit-WithError $_.Exception.Message }
+        }
+
+        # The task will run this file as SYSTEM three times a day, so refuse to
+        # register it while ordinary users can still rewrite it.
+        $unsafe = @(Get-UnsafeWriteAccess -Path $selfPath)
+        if ($unsafe.Count) {
+            Write-Host ''
+            Write-Host 'This script can be modified by users who are not administrators:' -ForegroundColor Red
+            foreach ($u in $unsafe) { Write-Host "  $u" -ForegroundColor Red }
+            Write-Host ''
+
+            if ($SkipLocationCheck) {
+                Write-Host 'Installing anyway because -SkipLocationCheck was passed.' -ForegroundColor Yellow
+                Write-Host ''
+            } else {
+                Write-Host 'The scheduled task runs this file as SYSTEM, so anyone who can change it can run' -ForegroundColor Yellow
+                Write-Host 'their own code as SYSTEM. Install it where only administrators can write:' -ForegroundColor Yellow
+                Write-Host ''
+                Write-Host '    New-Item -ItemType Directory "C:\Program Files\YDK" -Force' -ForegroundColor Yellow
+                Write-Host ('    Copy-Item "{0}" "C:\Program Files\YDK\ydk.ps1"' -f $selfPath) -ForegroundColor Yellow
+                Write-Host '    & "C:\Program Files\YDK\ydk.ps1" -Install' -ForegroundColor Yellow
+                Write-Host ''
+                Write-Host 'or lock the folder it is in down:' -ForegroundColor Yellow
+                Write-Host ('    icacls "{0}" /inheritance:r /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)RX"' -f (Split-Path -Parent $selfPath)) -ForegroundColor Yellow
+                Write-Host ''
+                Exit-WithError 'Install cancelled. Pass -SkipLocationCheck to install here anyway.'
+            }
         }
 
         Unblock-SelfFile -Path $selfPath
