@@ -167,7 +167,9 @@ function Get-UnsafeWriteAccess {
 
         # Nothing to judge about a path that is not there. For -Install the
         # script file always exists; this only skips a parent that does not.
-        if (-not (Test-Path -LiteralPath $item)) { continue }
+        # The .NET calls are used on purpose: unlike Test-Path they answer false
+        # instead of raising an error when the path cannot even be looked at.
+        if (-not ([IO.File]::Exists($item) -or [IO.Directory]::Exists($item))) { continue }
 
         try {
             $acl = Get-Acl -LiteralPath $item -ErrorAction Stop
