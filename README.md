@@ -64,14 +64,57 @@ All four modes need an **elevated PowerShell window**.
 
 ### Installation
 
-In a PowerShell window opened as administrator:
+Put the script where **only administrators can write**, then install it from
+there. In a PowerShell window opened as administrator:
 
 ```powershell
-C:\YDK\ydk.ps1 -Install
+New-Item -ItemType Directory 'C:\Program Files\YDK' -Force
+Copy-Item .\ydk.ps1 'C:\Program Files\YDK\ydk.ps1'
+& 'C:\Program Files\YDK\ydk.ps1' -Install
+& 'C:\Program Files\YDK\ydk.ps1' -Status     # did it work?
+Remove-Item .\ydk.ps1                        # the copy you brought to this machine
 ```
 
 By default this registers three tasks (`YDK0`, `YDK1`, `YDK2`) that run every day
 at **10:00**, **13:00** and **16:00** for `C:` and `D:`.
+
+The last line is housekeeping, not security: once the tasks are registered they
+run the copy in `C:\Program Files\YDK` and nothing ever looks at the file you
+brought with you, so leaving it behind only invites someone to edit the wrong
+file later. Delete it **after** `-Status` has shown you the tasks, and never
+delete your master copy (the repository or the deployment share you copy from).
+
+If you would rather not type all that on every machine, `ydk-setup.ps1` does the
+same thing: it asks for administrator rights itself, copies `ydk.ps1` (which has
+to sit next to it) into place, installs, and prints the health report.
+
+```powershell
+.\ydk-setup.ps1                                   # C:\Program Files\YDK, default schedule
+.\ydk-setup.ps1 -Time 08:00,20:00 -Volume C       # same options as -Install
+```
+
+It never deletes anything; removing the copy you brought stays the one manual
+step above.
+
+> [!CAUTION]
+> The location matters. The task runs the script as **SYSTEM**, so anyone who can
+> overwrite the file can run their own code as SYSTEM. A folder created directly
+> under `C:\` (`C:\YDK`, `C:\Tools`, …) inherits an *Authenticated Users: Modify*
+> entry from the drive root, which means every logged-on user can rewrite it;
+> the same goes for anything under a user profile (Desktop, Downloads).
+> `C:\Program Files\YDK` gives ordinary users read and execute only.
+>
+> `-Install` checks this and refuses to register the tasks when the script can be
+> modified by non-administrators. If you have to install somewhere else anyway,
+> pass `-SkipLocationCheck`, or lock the folder down first:
+>
+> ```powershell
+> icacls "C:\YDK" /inheritance:r /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)RX"
+> ```
+
+Updating later is just a copy: as long as the path does not change, the task
+picks up the new file on its next run and `-Install` does not need to be run
+again. Re-run `-Install` only to change the times, volumes or retention.
 
 Options for detailed installation are listed below:
 
@@ -84,6 +127,7 @@ Options for detailed installation are listed below:
 | `-LogRetentionDays`     | `90`                | Written into the task, so scheduled runs use the same retention. |
 | `-ShadowStorageMaxSize` | *(unset)*           | Overrides the VSS storage cap per volume: `25GB`, `20%`, `UNBOUNDED`. Left alone if not passed. |
 | `-MaxShadowCopies`      | *(unset)*           | Overrides how many shadow copies Windows keeps per volume (1–512). Left alone if not passed. |
+| `-SkipLocationCheck`    | off                 | Installs even when non-administrators can overwrite the script. See the caution above. |
 
 Written out in full, those defaults are:
 
