@@ -321,6 +321,29 @@ cmd /c rmdir C:\old
 - Snapshots are volume-level, not file-level; they freeze the whole disk at a
   moment in time rather than an individual file.
 
+---
+
+## Tests
+
+The suites live in [`tests/`](tests/README.md).
+
+```powershell
+.\tests\run.ps1                                    # safe suites, no admin needed
+.\tests\run.ps1 -System -IKnowThisIsATestMachine    # everything, elevated
+```
+
+> [!CAUTION]
+> **The system suites must only be run on a virtual machine or a throwaway test
+> machine — never on a working computer, and never on a client's.** They take
+> real VSS snapshots, register and delete scheduled tasks, write to the VSS
+> registry key, create and remove `C:\Program Files\YDK` and `C:\YDK`, mount and
+> detach a VHD with `diskpart`, and disable the VSS service for one test. They
+> record the state of the machine beforehand, put everything back afterwards and
+> fail if anything is left over, but that is a promise, not a guarantee.
+>
+> The safe suites (`tests\safe`) need no administrator rights, change nothing
+> outside `%TEMP%\ydk-tests`, and are the ones to run after editing the script.
+
 ## License
 
 Licensed under [GPL-v3.0](#LICENSE).
