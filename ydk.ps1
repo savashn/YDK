@@ -43,6 +43,12 @@ param(
     [Parameter(ParameterSetName = 'Install')]
     [switch] $SkipLocationCheck,
 
+    # -Install takes one snapshot as soon as the tasks are registered, so the
+    # machine has a restore point without waiting for the first scheduled run.
+    # This switch skips that; the tasks are registered either way.
+    [Parameter(ParameterSetName = 'Install')]
+    [switch] $NoInitialSnapshot,
+
     # Both of the following are unset by default: when not passed, Windows' own
     # VSS defaults (10% storage cap, 64 shadow copies per volume) are left alone.
     [Parameter(ParameterSetName = 'Install')]
@@ -695,6 +701,33 @@ $ShadowCopyReturnCode = @{
     13 = 'Unknown error'
 }
 
+function Initialize-LogFile {
+    <# Points Write-Log at $Path and makes sure the folder holding it is there.
+
+       Returns the reason as a string when the folder cannot be created, or
+       $null on success. The two callers disagree about how bad that is: a
+       snapshot run has nowhere to write its result and stops, while -Install
+       has already registered the tasks by the time it takes its first snapshot
+       and only warns. #>
+    param([Parameter(Mandatory)][string] $Path)
+
+    $script:LogFile = $Path
+
+    $dir = Split-Path -Parent $Path
+    if (-not $dir -or (Test-Path -LiteralPath $dir)) { return $null }
+
+    try {
+        # -WhatIf:$false - the log folder is exempt from -WhatIf as well.
+        # Without this a -WhatIf run would report "could not write to the log"
+        # on every single line.
+        New-Item -ItemType Directory -Path $dir -Force -WhatIf:$false -ErrorAction Stop | Out-Null
+    } catch {
+        return "Could not create the log folder ('$dir'): $($_.Exception.Message)"
+    }
+
+    return $null
+}
+
 function Write-Log {
     param(
         [Parameter(Mandatory)][string] $Message,
@@ -1084,6 +1117,52 @@ switch ($PSCmdlet.ParameterSetName) {
                         -TaskVolume $Volume `
                         -LogDays    $LogRetentionDays `
                         -Prefix     $TaskPrefix
+
+        # Without this the machine has no restore point at all until the first
+        # scheduled run, which on an install done just after the last time of
+        # the day is nearly a full day away - and it is also the only thing that
+        # proves VSS on this machine can actually take a snapshot, while the
+        # person who ran the install is still watching.
+        #
+        # It deliberately does not change the exit code: the tasks are
+        # registered and correct whether the snapshot worked or not, and
+        # ydk-setup.ps1 reads a non-zero exit as "the install failed, nothing
+        # was changed". A failure here is loud in the log and in -Status
+        # instead.
+        if ($NoInitialSnapshot) {
+            Write-Host 'First snapshot skipped (-NoInitialSnapshot).'
+            exit 0
+        }
+
+        # Asked here rather than inside Invoke-Snapshot so that a -WhatIf install
+        # does not create the Logs folder for real on its way to reporting that
+        # it would have taken a snapshot.
+        if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Take the first snapshot now')) {
+            exit 0
+        }
+
+        Write-Host ''
+        Write-Host 'Taking the first snapshot:' -ForegroundColor Cyan
+
+        $logMessage = Initialize-LogFile -Path (Join-Path (Join-Path $baseDir 'Logs') `
+                                                          ("ydk-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd')))
+        if ($logMessage) {
+            Write-Host $logMessage -ForegroundColor Yellow
+            Write-Host 'The tasks are registered; only this first snapshot was skipped.' -ForegroundColor Yellow
+            exit 0
+        }
+
+        # -FailMissing $false: the default volume list is C,D and D is missing on
+        # plenty of machines. A volume that is not there is worth a line in the
+        # log, not a red install.
+        $failedCount = Invoke-Snapshot -TargetVolume $Volume -FailMissing $false
+
+        if ($failedCount -gt 0) {
+            Write-Host ''
+            Write-Host 'The tasks are registered, but the first snapshot failed on one or more' -ForegroundColor Yellow
+            Write-Host 'volumes (see the lines above). The scheduled runs will try again.' -ForegroundColor Yellow
+        }
+
         exit 0
     }
 
@@ -1092,26 +1171,13 @@ switch ($PSCmdlet.ParameterSetName) {
             Exit-WithError 'The volume list is empty. Example: -Volume C,D'
         }
 
-        # Log file path (Write-Log reads this from the script scope)
-        if ($LogPath) {
-            $script:LogFile = $LogPath
-        } else {
-            $script:LogFile = Join-Path (Join-Path $baseDir 'Logs') ("ydk-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
-        }
-
-        # The log folder is exempt from -WhatIf too; without this a -WhatIf run
-        # would report "could not write to the log" on every line.
-        $logDir = Split-Path -Parent $script:LogFile
-        if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
-            try {
-                New-Item -ItemType Directory -Path $logDir -Force -WhatIf:$false -ErrorAction Stop | Out-Null
-            } catch {
-                # A -LogPath pointing somewhere unwritable is a parameter
-                # problem, so report it as one instead of letting the raw
-                # New-Item error escape.
-                Exit-WithError "Could not create the log folder ('$logDir'): $($_.Exception.Message)"
-            }
-        }
+        # Log file path (Write-Log reads this from the script scope). A -LogPath
+        # pointing somewhere unwritable is a parameter problem, so it is reported
+        # as one instead of letting the raw New-Item error escape.
+        $logMessage = Initialize-LogFile -Path $(
+            if ($LogPath) { $LogPath }
+            else { Join-Path (Join-Path $baseDir 'Logs') ("ydk-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd')) })
+        if ($logMessage) { Exit-WithError $logMessage }
 
         if (-not (Test-Administrator)) {
             Write-Log 'This script must be run as administrator. Creating a VSS snapshot requires it.' -Level ERROR

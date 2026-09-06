@@ -44,6 +44,10 @@ param(
     [int]      $LogRetentionDays,
     [string]   $TaskPrefix,
 
+    # Passed through as well: "ydk.ps1 -Install" ends with a first snapshot
+    # unless this is given.
+    [switch]   $NoInitialSnapshot,
+
     # Set on the copy that this script starts elevated; it stops an endless
     # relaunch loop if elevation somehow does not raise the token.
     [switch] $Elevated
@@ -89,6 +93,10 @@ if (-not $isAdmin) {
     foreach ($name in @('Time', 'Volume')) {
         if ($PSBoundParameters.ContainsKey($name)) { $argList += @("-$name", ('"{0}"' -f ($PSBoundParameters[$name] -join ','))) }
     }
+    # Switches carry no value; passing one would bind as a positional argument.
+    foreach ($name in @('NoInitialSnapshot')) {
+        if ($PSBoundParameters.ContainsKey($name)) { $argList += "-$name" }
+    }
 
     Write-Host 'Administrator rights are needed; asking for them now...' -ForegroundColor Yellow
     try {
@@ -132,7 +140,7 @@ if ((Resolve-Path -LiteralPath $source).Path -ieq $target) {
 # Whatever the caller passed is handed over unchanged; ydk.ps1 owns every
 # decision from here on, including refusing a folder ordinary users can write to.
 $installArgs = @{}
-foreach ($name in @('Time', 'Volume', 'LogRetentionDays', 'TaskPrefix')) {
+foreach ($name in @('Time', 'Volume', 'LogRetentionDays', 'TaskPrefix', 'NoInitialSnapshot')) {
     if ($PSBoundParameters.ContainsKey($name)) { $installArgs[$name] = $PSBoundParameters[$name] }
 }
 
@@ -159,13 +167,17 @@ if ((Resolve-Path -LiteralPath $source).Path -ine $target) {
     Write-Host 'Keep your master copy (repository, deployment share) where it is.'
 }
 
-# The health report exits with 1 when it finds anything worth mentioning, and a
-# machine that has not taken its first snapshot yet always will. That says
-# nothing about whether the install worked, so it is reported, not passed on.
+# The health report exits with 1 when it finds anything worth mentioning. That
+# says nothing about whether the install worked, so it is reported, not passed
+# on. Since -Install ends with a first snapshot, the report is normally clean
+# here; with -NoInitialSnapshot the machine has no shadow copies yet and the
+# report will say so.
 if ($statusCode -ne 0) {
     Write-Host ''
-    Write-Host 'The health report above lists something to look at. On a machine that has not' -ForegroundColor Yellow
-    Write-Host 'taken its first snapshot yet, that is expected.' -ForegroundColor Yellow
+    Write-Host 'The health report above lists something to look at.' -ForegroundColor Yellow
+    if ($NoInitialSnapshot) {
+        Write-Host 'On a machine that has not taken its first snapshot yet, that is expected.' -ForegroundColor Yellow
+    }
 }
 
 exit 0

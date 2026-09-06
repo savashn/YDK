@@ -39,13 +39,19 @@ single system suite by hand needs `$env:YDK_TESTS_ALLOW_SYSTEM = '1'` first.
 
 | Suite | What it covers |
 |---|---|
-| `01-snapshots-and-tasks.ps1` | The whole snapshot mode (volume formats, missing and non-NTFS volumes, `-WhatIf`, log retention, two runs at once) and install/uninstall/status, including the guard that keeps `-Uninstall` away from tasks it did not create. |
+| `01-snapshots-and-tasks.ps1` | The whole snapshot mode (volume formats, missing and non-NTFS volumes, `-WhatIf`, log retention, two runs at once) and install/uninstall/status, including the first snapshot `-Install` ends with, `-NoInitialSnapshot`, and the guard that keeps `-Uninstall` away from tasks it did not create. |
 | `02-counts-and-vss-limits.ps1` | Snapshot counting per volume, `-Time` parsing through `-File` versus an array, uninstall safety with decoy tasks, the shadow storage cap (raise, lower, percentage) and `MaxShadowCopies`. |
 | `03-fix-regressions.ps1` | The defects found by earlier rounds: trigger-less tasks in `-Status`, comma-separated `-Time`, all-or-nothing time validation, orphan tasks, empty prefix and empty lists, unusable log folder. |
 | `04-vss-return-codes.ps1` | Every `Win32_ShadowCopy::Create` return code, through a copy of the script whose `New-ShadowCopy` is replaced by a stub — including the retry on code 9 and an undefined code. |
 | `05-environment.ps1` | A second NTFS volume (VHD) and the same volume as FAT32, a `subst` drive, VSS left Disabled, a locked log file, two runs sharing one log file, task prefixes with regex and non-ASCII characters, a script path containing `&` and `[ ]`, and the `-Status` warnings. |
 | `06-install-location.ps1` | Installing from `C:\Program Files\YDK` end to end (the SYSTEM task runs and writes its log there), the refusal to install from a folder ordinary users can write to, `-SkipLocationCheck`, and `icacls` hardening making the same install succeed. |
-| `07-setup-script.ps1` | `ydk-setup.ps1`: its guards without administrator rights, a full run, options handed through, re-running as an update, running from the destination, and the failure paths. |
+| `07-setup-script.ps1` | `ydk-setup.ps1`: its guards without administrator rights, a full run ending in a first snapshot, options handed through, re-running as an update, running from the destination, and the failure paths. |
+
+A suite that installs sets `$script:InstallsSkipSnapshot = $true`, and the
+harness then adds `-NoInitialSnapshot` to every install it runs: the suites
+register tasks dozens of times to check the registration, and each of those
+would otherwise leave a real shadow copy behind. The cases that are about the
+first snapshot opt back in with `-InitialSnapshot`.
 
 ## Machines these are written for
 

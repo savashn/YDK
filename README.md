@@ -56,7 +56,7 @@ YDK has basically 4 main modes:
 | Mode                | What it does           | When                                                                                 |
 |---------------------|------------------------|--------------------------------------------------------------------------------------|
 | *(no parameters)*   | Takes a snapshot       | The scheduled task calls this three times a day; also used for an on-demand snapshot |
-| `-Install`          | Registers the tasks    | Once, by hand                                                                        |
+| `-Install`          | Registers the tasks, then takes the first snapshot | Once, by hand                                            |
 | `-Uninstall`        | Removes the tasks      | When needed                                                                          |
 | `-Status`           | Prints a health report | To check a machine, or from a monitoring script                                      |
 
@@ -78,6 +78,13 @@ Remove-Item .\ydk.ps1                        # the copy you brought to this mach
 By default this registers three tasks (`YDK0`, `YDK1`, `YDK2`) that run every day
 at **10:00**, **13:00** and **16:00** for `C:` and `D:`.
 
+`-Install` then takes one snapshot straight away, so the machine has a restore
+point without waiting for the first scheduled run — and you find out while you
+are still standing at the machine whether VSS on it can take a snapshot at all.
+It writes its log next to the script (`C:\Program Files\YDK\Logs`), exactly as
+the scheduled runs will. Pass `-NoInitialSnapshot` to skip it; the tasks are
+registered either way, and a snapshot that fails never fails the install.
+
 The last line is housekeeping, not security: once the tasks are registered they
 run the copy in `C:\Program Files\YDK` and nothing ever looks at the file you
 brought with you, so leaving it behind only invites someone to edit the wrong
@@ -91,6 +98,7 @@ to sit next to it) into place, installs, and prints the health report.
 ```powershell
 .\ydk-setup.ps1                                   # C:\Program Files\YDK, default schedule
 .\ydk-setup.ps1 -Time 08:00,20:00 -Volume C       # same options as -Install
+.\ydk-setup.ps1 -NoInitialSnapshot                # ... including this one
 ```
 
 It never deletes anything; removing the copy you brought stays the one manual
@@ -127,6 +135,7 @@ Options for detailed installation are listed below:
 | `-ShadowStorageMaxSize` | *(unset)*           | Overrides the VSS storage cap per volume: `25GB`, `20%`, `UNBOUNDED`. Left alone if not passed. |
 | `-MaxShadowCopies`      | *(unset)*           | Overrides how many shadow copies Windows keeps per volume (1–512). Left alone if not passed. |
 | `-SkipLocationCheck`    | off                 | Installs even when non-administrators can overwrite the script. See the caution above. |
+| `-NoInitialSnapshot`    | off                 | Registers the tasks without taking the first snapshot. |
 
 Written out in full, those defaults are:
 

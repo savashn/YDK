@@ -9,6 +9,15 @@ $script:TestRoot = Join-Path $env:TEMP 'ydk-tests'
 $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 New-Item -ItemType Directory -Path $script:TestRoot -Force | Out-Null
 
+# -Install ends with a real snapshot. The system suites register tasks dozens of
+# times to check the registration itself, and every one of those installs would
+# otherwise leave a shadow copy behind that the suite has to account for and
+# clean up again - minutes of VSS work to test something that has nothing to do
+# with snapshots. A suite sets this to $true and Invoke-Case then adds
+# -NoInitialSnapshot to every install it runs; the cases that are about the
+# first snapshot opt back in with -InitialSnapshot.
+$script:InstallsSkipSnapshot = $false
+
 function Get-YdkScript {
     <# The ydk.ps1 under test: the one in this working copy. #>
     Join-Path $script:RepoRoot 'ydk.ps1'
@@ -69,10 +78,20 @@ function Invoke-Case {
         [string[]] $NotExpect = @(),
         [scriptblock] $Pre = $null,
         [scriptblock] $Check = $null,
-        [switch] $NoRun
+        [switch] $NoRun,
+        # Let this case take the first snapshot that -Install now ends with.
+        [switch] $InitialSnapshot
     )
 
     if ($Pre) { & $Pre | Out-Null }
+
+    # See $script:InstallsSkipSnapshot above. ydk-setup.ps1 is covered too: it
+    # hands the switch straight through to "ydk.ps1 -Install".
+    if ($script:InstallsSkipSnapshot -and -not $InitialSnapshot -and
+        $ArgLine -notmatch '-NoInitialSnapshot' -and
+        ($ArgLine -match '(^|\s)-Install(\s|$)' -or $ScriptPath -like '*ydk-setup.ps1')) {
+        $ArgLine = ($ArgLine + ' -NoInitialSnapshot').Trim()
+    }
 
     $o = Join-Path $script:OutDir "$Id.out.txt"
     $e = Join-Path $script:OutDir "$Id.err.txt"

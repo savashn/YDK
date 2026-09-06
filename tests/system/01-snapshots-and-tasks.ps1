@@ -12,6 +12,9 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path (Split-Path -Parent $here) 'harness.ps1')
 
+# Installs in this suite are about the registration, not about snapshots.
+$script:InstallsSkipSnapshot = $true
+
 $script:OutDir = Join-Path $script:TestRoot 'out-snapshots-and-tasks'
 New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
 Get-ChildItem $script:OutDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -352,8 +355,18 @@ Add-Result 'S20' "Two snapshot runs at the same time ($note)" $(if ($prob) { 'FA
 Write-Host ('=' * 100)
 Write-Host '3. INSTALL / UNINSTALL / STATUS' -ForegroundColor Cyan
 
-Invoke-Case I01 '-Install -WhatIf registers nothing' -ArgLine '-Install -WhatIf' -ExpectExit 0 `
-    -Check { $t = Get-YdkTaskNames; if ($t.Count) { "tasks were created: $($t -join ',')" } }
+# -InitialSnapshot: let the case through without -NoInitialSnapshot, because
+# what it checks is that -WhatIf stops the first snapshot on its own.
+Invoke-Case I01 '-Install -WhatIf registers nothing and takes no snapshot' -ArgLine '-Install -WhatIf' `
+    -InitialSnapshot -ExpectExit 0 -NotExpect 'snapshot created' `
+    -Pre   { $script:beforeC = @(Get-CShadows).Count } `
+    -Check {
+        $problems = @()
+        $t = Get-YdkTaskNames
+        if ($t.Count) { $problems += "tasks were created: $($t -join ',')" }
+        if (@(Get-CShadows).Count -ne $script:beforeC) { $problems += 'a -WhatIf install created a shadow copy' }
+        $problems
+    }
 
 Invoke-Case I02 '-Install with defaults -> YDK0..YDK2' -ArgLine '-Install' -ExpectExit 0 `
     -Expect 'Registered: YDK0', 'Registered: YDK1', 'Registered: YDK2', 'Install complete' `
@@ -384,6 +397,25 @@ Invoke-Case I02 '-Install with defaults -> YDK0..YDK2' -ArgLine '-Install' -Expe
 Invoke-Case I03 '-Install again (idempotent overwrite)' -ArgLine '-Install' -ExpectExit 0 `
     -Expect 'Removed existing task' `
     -Check { $n = (Get-YdkTaskNames).Count; if ($n -ne 3) { "expected 3 tasks, found $n" } }
+
+# The first snapshot -Install ends with. Every other install case in this suite
+# is handed -NoInitialSnapshot by the harness, so these two are the only ones
+# that see the default behaviour.
+Invoke-Case I03a '-Install takes the first snapshot' -ArgLine '-Install' -InitialSnapshot -ExpectExit 0 `
+    -Expect 'Taking the first snapshot', 'snapshot created' `
+    -Pre   { $script:beforeC = @(Get-CShadows).Count } `
+    -Check {
+        $problems = @()
+        if (@(Get-CShadows).Count -le $script:beforeC)       { $problems += 'no new shadow copy on C:' }
+        if ((Get-YdkTaskNames).Count -ne 3)                  { $problems += 'the tasks were not registered' }
+        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'Logs'))) { $problems += 'no Logs folder next to the installed script' }
+        $problems
+    }
+
+Invoke-Case I03b '-Install -NoInitialSnapshot takes none' -ArgLine '-Install -NoInitialSnapshot' -ExpectExit 0 `
+    -Expect 'First snapshot skipped' -NotExpect 'snapshot created' `
+    -Pre   { $script:beforeC = @(Get-CShadows).Count } `
+    -Check { if (@(Get-CShadows).Count -ne $script:beforeC) { 'a shadow copy was created anyway' } }
 
 Invoke-Case I04 '-Install with custom times/volume/retention (Command mode array)' -Mode Command `
     -ArgLine "-Install -Time '08:00','20:00' -Volume C -LogRetentionDays 30" -ExpectExit 0 `

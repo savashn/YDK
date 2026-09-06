@@ -12,6 +12,9 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path (Split-Path -Parent $here) 'harness.ps1')
 
+# Installs in this suite are about the registration, not about snapshots.
+$script:InstallsSkipSnapshot = $true
+
 $script:OutDir = Join-Path $script:TestRoot 'out-setup-script'
 New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
 Get-ChildItem $script:OutDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -101,6 +104,17 @@ Invoke-Case Q05 'Default run: copies into Program Files, installs, prints the re
             $problems += "the task does not point at the installed copy: $(@($t.Actions)[0].Arguments)"
         }
         if (-not (Test-Path -LiteralPath (Join-Path $stage 'ydk.ps1'))) { $problems += 'the staged copy was deleted (it must not be)' }
+        $problems
+    }
+
+Invoke-Case Q05b 'The install it runs ends with a first snapshot' `
+    -ArgLine '-Volume C' -InitialSnapshot -ExpectExit 0 `
+    -Expect 'Taking the first snapshot', 'snapshot created' `
+    -Pre   { $script:beforeShadows = (Get-ShadowIds).Count } `
+    -Check {
+        $problems = @()
+        if ((Get-ShadowIds).Count -le $script:beforeShadows) { $problems += 'no shadow copy was created' }
+        if (-not (Test-Path -LiteralPath (Join-Path $dest 'Logs'))) { $problems += 'no Logs folder in the install folder' }
         $problems
     }
 
