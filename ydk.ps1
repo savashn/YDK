@@ -340,7 +340,8 @@ function Install-YdkTask {
     Write-Host "  Start-ScheduledTask -TaskName '${Prefix}0'"
     Write-Host "  Get-ScheduledTaskInfo -TaskName '${Prefix}0'"
     Write-Host ''
-    Write-Host 'To remove:  .\ydk.ps1 -Uninstall'
+    Write-Host 'To pause it, keeping the tool where it is:  .\ydk.ps1 -Stop'
+    Write-Host 'To remove it and this folder completely:    .\ydk.ps1 -Uninstall'
 }
 
 function Test-IsYdkTask {
