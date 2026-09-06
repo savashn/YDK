@@ -35,6 +35,9 @@ Invoke-Case P11 'Uninstall + Volume'                        -ArgLine '-Uninstall
 Invoke-Case P12 'Status + LogRetentionDays'                 -ArgLine '-Status -LogRetentionDays 5' -Expect 'Parameter set cannot be resolved|AmbiguousParameterSet'
 Invoke-Case P13 'Unknown parameter'                         -ArgLine '-Foo bar' -Expect 'A parameter cannot be found|named parameter'
 Invoke-Case P14 'Volume without a value'                    -ArgLine '-Volume' -Expect 'Missing an argument|cannot be found'
+Invoke-Case P15 'Stop + Uninstall together -> parameter set conflict' -ArgLine '-Stop -Uninstall' -Expect 'Parameter set cannot be resolved|AmbiguousParameterSet'
+Invoke-Case P16 'Uninstall + NoInitialSnapshot (install-only switch)' -ArgLine '-Uninstall -NoInitialSnapshot' -Expect 'Parameter set cannot be resolved|AmbiguousParameterSet'
+Invoke-Case P17 'Stop + Volume (not in the Stop set)'                 -ArgLine '-Stop -Volume C' -Expect 'Parameter set cannot be resolved|AmbiguousParameterSet'
 
 Write-Host ('-' * 100)
 Write-Host 'B. Non-administrator behaviour' -ForegroundColor Cyan
@@ -48,7 +51,9 @@ Invoke-Case N01 'Snapshot without admin -> exit 2 + explanation' `
 
 Invoke-Case N02 'Status without admin'    -ArgLine '-Status'    -ExpectExit 2 -Expect 'administrator'
 Invoke-Case N03 'Install without admin'   -ArgLine '-Install'   -ExpectExit 2 -Expect 'administrator'
-Invoke-Case N04 'Uninstall without admin' -ArgLine '-Uninstall' -ExpectExit 2 -Expect 'administrator'
+Invoke-Case N04 'Uninstall without admin' -ArgLine '-Uninstall' -ExpectExit 2 -Expect 'administrator' `
+    -Check { if (-not (Test-Path -LiteralPath $SUT)) { 'the admin check runs before anything is deleted, but the script is gone' } }
+Invoke-Case N04b 'Stop without admin' -ArgLine '-Stop' -ExpectExit 2 -Expect 'administrator'
 Invoke-Case N05 'WhatIf snapshot without admin (admin check comes first)' `
     -ArgLine ('-WhatIf -Volume C -LogPath "{0}"' -f (Join-Path $work 'n05.log')) -ExpectExit 2 -Expect 'administrator'
 

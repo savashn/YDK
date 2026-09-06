@@ -12,8 +12,8 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path (Split-Path -Parent $here) 'harness.ps1')
 
-# Installs in this suite are about the registration, not about snapshots.
-$script:InstallsSkipSnapshot = $true
+# This suite drives install/uninstall itself; see the harness.
+$script:SuiteManagesInstall = $true
 
 $script:OutDir = Join-Path $script:TestRoot 'out-snapshots-and-tasks'
 New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
@@ -508,6 +508,104 @@ Invoke-Case I19 '-Uninstall removes only our tasks, decoys survive' -ArgLine '-U
         if (-not (Get-ScheduledTask -TaskName 'YDK7' -TaskPath '\' -ErrorAction SilentlyContinue)) { $problems += 'the YDK7 decoy (foreign description) was deleted' }
         if (-not (Get-ScheduledTask -TaskName 'YDKfoo' -TaskPath '\' -ErrorAction SilentlyContinue)) { $problems += 'the YDKfoo decoy was deleted' }
         if (-not (Get-ScheduledTask -TaskName 'YDK8' -TaskPath '\YdkTestFolder\' -ErrorAction SilentlyContinue)) { $problems += 'the decoy in the sub-folder was deleted' }
+        $problems
+    }
+
+# --- the install folder -Uninstall removes ---------------------------------
+# Every other uninstall case in this suite is run as -Stop by the harness,
+# because deleting C:\Program Files\YDK would take away the script the rest of
+# the suite runs with. These use throwaway folders of their own.
+
+function Test-TaskThere { param([string] $Name)
+    [bool](Get-ScheduledTask -TaskName $Name -TaskPath '\' -ErrorAction SilentlyContinue) }
+
+# -SkipLocationCheck: a folder under %TEMP% is writable by this user, which is
+# exactly what -Install is meant to refuse.
+function Install-ThrowawayCopy { param([string] $Folder, [string] $Prefix)
+    New-Item -ItemType Directory -Path $Folder -Force | Out-Null
+    Copy-Item -LiteralPath $script:SUT -Destination (Join-Path $Folder 'ydk.ps1') -Force
+    & (Join-Path $Folder 'ydk.ps1') -Install -TaskPrefix $Prefix -Time 03:00 `
+                                     -SkipLocationCheck -NoInitialSnapshot | Out-Null }
+
+$rmDir = Join-Path $work 'uninstall-removes'
+$kpDir = Join-Path $work 'uninstall-keeps'
+
+Invoke-Case I19a '-Uninstall deletes an install folder holding only our files' `
+    -ScriptPath (Join-Path $rmDir 'ydk.ps1') -ArgLine '-Uninstall -TaskPrefix RMV' -RemoveFiles -ExpectExit 0 `
+    -Expect 'Deleted: RMV0', 'Deleted: .*uninstall-removes' `
+    -Pre   { Install-ThrowawayCopy -Folder $rmDir -Prefix 'RMV' } `
+    -Check {
+        $problems = @()
+        if (Test-Path -LiteralPath $rmDir) { $problems += 'the install folder is still there' }
+        if (Test-TaskThere 'RMV0')          { $problems += 'the RMV0 task was not removed' }
+        $problems
+    }
+
+Invoke-Case I19b '-Uninstall leaves a folder holding anything else alone' `
+    -ScriptPath (Join-Path $kpDir 'ydk.ps1') -ArgLine '-Uninstall -TaskPrefix KEP' -RemoveFiles -ExpectExit 0 `
+    -Expect 'Deleted: KEP0', 'was left alone' `
+    -Pre   {
+        Install-ThrowawayCopy -Folder $kpDir -Prefix 'KEP'
+        Set-Content -LiteralPath (Join-Path $kpDir 'notes.txt') -Value 'not ours' -Encoding UTF8
+    } `
+    -Check {
+        $problems = @()
+        if (-not (Test-Path -LiteralPath (Join-Path $kpDir 'ydk.ps1')))   { $problems += 'ydk.ps1 was deleted anyway' }
+        if (-not (Test-Path -LiteralPath (Join-Path $kpDir 'notes.txt'))) { $problems += 'the foreign file was deleted' }
+        if (Test-TaskThere 'KEP0')                                        { $problems += 'the KEP0 task was not removed' }
+        $problems
+    }
+
+Invoke-Case I19c '-Uninstall -WhatIf removes neither the tasks nor the folder' `
+    -ScriptPath (Join-Path $rmDir 'ydk.ps1') -ArgLine '-Uninstall -TaskPrefix WIF -WhatIf' -RemoveFiles -ExpectExit 0 `
+    -Pre   { Install-ThrowawayCopy -Folder $rmDir -Prefix 'WIF' } `
+    -Check {
+        $problems = @()
+        if (-not (Test-Path -LiteralPath (Join-Path $rmDir 'ydk.ps1'))) { $problems += 'the folder was deleted by a -WhatIf run' }
+        if (-not (Test-TaskThere 'WIF0'))                               { $problems += 'the WIF0 task was deleted by a -WhatIf run' }
+        $problems
+    }
+
+Invoke-Case I19d 'The same uninstall without -WhatIf removes both' `
+    -ScriptPath (Join-Path $rmDir 'ydk.ps1') -ArgLine '-Uninstall -TaskPrefix WIF' -RemoveFiles -ExpectExit 0 `
+    -Expect 'Deleted: WIF0' `
+    -Check {
+        $problems = @()
+        if (Test-TaskThere 'WIF0')          { $problems += 'the WIF0 task survived' }
+        if (Test-Path -LiteralPath $rmDir) { $problems += 'the install folder survived' }
+        Remove-Item -LiteralPath $kpDir -Recurse -Force -ErrorAction SilentlyContinue
+        $problems
+    }
+
+$stDir = Join-Path $work 'stop-keeps'
+
+Invoke-Case I19e '-Stop removes the tasks and keeps every file' `
+    -ScriptPath (Join-Path $stDir 'ydk.ps1') -ArgLine '-Stop -TaskPrefix STP' -ExpectExit 0 `
+    -Expect 'Deleted: STP0', 'still here', '-Install to start again' `
+    -Pre   { Install-ThrowawayCopy -Folder $stDir -Prefix 'STP' } `
+    -Check {
+        $problems = @()
+        if (Test-TaskThere 'STP0')                                        { $problems += 'the STP0 task was not removed' }
+        if (-not (Test-Path -LiteralPath (Join-Path $stDir 'ydk.ps1')))   { $problems += '-Stop deleted the script' }
+        $problems
+    }
+
+Invoke-Case I19f 'and -Install after -Stop puts them back' `
+    -ScriptPath (Join-Path $stDir 'ydk.ps1') `
+    -ArgLine '-Install -TaskPrefix STP -Time 03:00 -SkipLocationCheck' -ExpectExit 0 `
+    -Expect 'Registered: STP0' `
+    -Check {
+        $problems = @()
+        if (-not (Test-TaskThere 'STP0')) { $problems += 'the STP0 task did not come back' }
+        $problems
+    }
+
+Invoke-Case I19g 'Clean up the STP install for real' `
+    -ScriptPath (Join-Path $stDir 'ydk.ps1') -ArgLine '-Uninstall -TaskPrefix STP' -RemoveFiles -ExpectExit 0 `
+    -Check {
+        $problems = @()
+        if (Test-TaskThere 'STP0')          { $problems += 'the STP0 task survived' }
+        if (Test-Path -LiteralPath $stDir) { $problems += 'the install folder survived' }
         $problems
     }
 

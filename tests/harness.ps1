@@ -9,14 +9,16 @@ $script:TestRoot = Join-Path $env:TEMP 'ydk-tests'
 $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 New-Item -ItemType Directory -Path $script:TestRoot -Force | Out-Null
 
-# -Install ends with a real snapshot. The system suites register tasks dozens of
-# times to check the registration itself, and every one of those installs would
-# otherwise leave a shadow copy behind that the suite has to account for and
-# clean up again - minutes of VSS work to test something that has nothing to do
-# with snapshots. A suite sets this to $true and Invoke-Case then adds
-# -NoInitialSnapshot to every install it runs; the cases that are about the
-# first snapshot opt back in with -InitialSnapshot.
-$script:InstallsSkipSnapshot = $false
+# Two things the tool does get in the way of a suite that installs and removes
+# tasks dozens of times to test the registration itself: -Install ends with a
+# real snapshot the suite would then have to account for and clean up, and
+# -Uninstall deletes the install folder out from under every case that comes
+# after it. A suite sets this to $true and Invoke-Case then adds
+# -NoInitialSnapshot to every install it runs and turns every -Uninstall into
+# -Stop, which removes the same tasks and leaves the files alone. The cases that
+# are about those two behaviours opt back in with -InitialSnapshot /
+# -RemoveFiles.
+$script:SuiteManagesInstall = $false
 
 function Get-YdkScript {
     <# The ydk.ps1 under test: the one in this working copy. #>
@@ -79,18 +81,25 @@ function Invoke-Case {
         [scriptblock] $Pre = $null,
         [scriptblock] $Check = $null,
         [switch] $NoRun,
-        # Let this case take the first snapshot that -Install now ends with.
-        [switch] $InitialSnapshot
+        # Let this case take the first snapshot that -Install ends with.
+        [switch] $InitialSnapshot,
+        # Let this case run a real -Uninstall, which deletes the install folder.
+        [switch] $RemoveFiles
     )
 
     if ($Pre) { & $Pre | Out-Null }
 
-    # See $script:InstallsSkipSnapshot above. ydk-setup.ps1 is covered too: it
-    # hands the switch straight through to "ydk.ps1 -Install".
-    if ($script:InstallsSkipSnapshot -and -not $InitialSnapshot -and
+    # See $script:SuiteManagesInstall above. ydk-setup.ps1 is covered by the
+    # first rule too: it hands the switch straight through to "ydk.ps1 -Install".
+    if ($script:SuiteManagesInstall -and -not $InitialSnapshot -and
         $ArgLine -notmatch '-NoInitialSnapshot' -and
         ($ArgLine -match '(^|\s)-Install(\s|$)' -or $ScriptPath -like '*ydk-setup.ps1')) {
         $ArgLine = ($ArgLine + ' -NoInitialSnapshot').Trim()
+    }
+
+    if ($script:SuiteManagesInstall -and -not $RemoveFiles -and
+        $ArgLine -match '(^|\s)-Uninstall(\s|$)') {
+        $ArgLine = $ArgLine -replace '(^|\s)-Uninstall(\s|$)', '$1-Stop$2'
     }
 
     $o = Join-Path $script:OutDir "$Id.out.txt"

@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path (Split-Path -Parent $here) 'harness.ps1')
 
-# Installs in this suite are about the registration, not about snapshots.
-$script:InstallsSkipSnapshot = $true
+# This suite drives install/uninstall itself; see the harness.
+$script:SuiteManagesInstall = $true
 
 $script:OutDir = Join-Path $script:TestRoot 'out-counts-and-limits'
 New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null

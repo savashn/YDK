@@ -12,8 +12,8 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path (Split-Path -Parent $here) 'harness.ps1')
 
-# Installs in this suite are about the registration, not about snapshots.
-$script:InstallsSkipSnapshot = $true
+# This suite drives install/uninstall itself; see the harness.
+$script:SuiteManagesInstall = $true
 
 $script:OutDir = Join-Path $script:TestRoot 'out-setup-script'
 New-Item -ItemType Directory -Path $script:OutDir -Force | Out-Null
@@ -141,7 +141,7 @@ Invoke-Case Q07 'A custom -TaskPrefix reaches both -Install and -Status' `
     -Expect 'Registered: SET0' `
     -Check { if (-not (Get-ScheduledTask -TaskName 'SET0' -TaskPath '\' -ErrorAction SilentlyContinue)) { 'SET0 was not created' } }
 
-& (Join-Path $dest 'ydk.ps1') -Uninstall -TaskPrefix SET | Out-Null
+& (Join-Path $dest 'ydk.ps1') -Stop -TaskPrefix SET | Out-Null
 
 Write-Host '  Q08: does the installed task actually run?'
 Start-ScheduledTask -TaskName 'YDK0' -TaskPath '\'

@@ -26,6 +26,11 @@ param(
     [Parameter(ParameterSetName = 'Status', Mandatory)]
     [switch] $Status,
 
+    # Stops the automation without taking the tool off the machine: the
+    # scheduled tasks go, every file stays. -Install starts it again.
+    [Parameter(ParameterSetName = 'Stop', Mandatory)]
+    [switch] $Stop,
+
     [Parameter(ParameterSetName = 'Snapshot')]
     [Parameter(ParameterSetName = 'Install')]
     [string[]] $Volume = @('C', 'D'),
@@ -36,6 +41,7 @@ param(
     [Parameter(ParameterSetName = 'Install')]
     [Parameter(ParameterSetName = 'Uninstall')]
     [Parameter(ParameterSetName = 'Status')]
+    [Parameter(ParameterSetName = 'Stop')]
     [string] $TaskPrefix = 'YDK',
 
     # -Install refuses to register a task for a script that non-administrators
@@ -391,6 +397,82 @@ function Uninstall-YdkTask {
             Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath '\' -Confirm:$false
             Write-Host "Deleted: $($t.TaskName)" -ForegroundColor Green
         }
+    }
+}
+
+function Remove-YdkInstallFolder {
+    <# Deletes the folder this script is running from, so -Uninstall leaves
+       nothing of the tool behind.
+
+       It only does that when everything in the folder was put there by this
+       tool. The guard is deliberately narrow, for the same reason
+       Test-IsYdkTask is: "the install folder" is only ever whatever folder
+       ydk.ps1 happens to sit in, and that is just as likely to be a working
+       copy of the repository or a C:\Tools full of somebody else's scripts. One
+       file in there we did not write - a README, a .git folder, a log named
+       something else - and nothing is deleted at all.
+
+       Deleting the running script itself is fine: PowerShell reads a .ps1 into
+       memory before executing it and holds no lock on the file. #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param([Parameter(Mandatory)][string] $SelfPath)
+
+    $folder = Split-Path -Parent $SelfPath
+    if (-not $folder) { return }
+
+    # A script dropped straight into C:\ would otherwise nominate the whole
+    # drive for deletion. The check below would refuse it anyway, but a volume
+    # root is worth saying out loud rather than listing its contents.
+    if ($folder -match '^[A-Za-z]:\\?$') {
+        Write-Host ''
+        Write-Host "The script sits in the root of $folder, which is never deleted. Only the tasks were removed." -ForegroundColor Yellow
+        return
+    }
+
+    # Everything this tool writes, and nothing else. Logs may hold only files
+    # whose names match the pattern Remove-OldLogFile recognises.
+    $ourFiles = @('ydk.ps1', 'ydk-setup.ps1')
+    $foreign  = New-Object System.Collections.Generic.List[string]
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $folder -Force -ErrorAction SilentlyContinue)) {
+
+        if (-not $item.PSIsContainer) {
+            if ($ourFiles -notcontains $item.Name) { $foreign.Add($item.FullName) }
+            continue
+        }
+
+        if ($item.Name -ne 'Logs') { $foreign.Add($item.FullName); continue }
+
+        foreach ($log in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue)) {
+            if ($log.PSIsContainer -or $log.Name -notmatch '^(?:ydk|Yedek)-\d{4}-\d{2}-\d{2}\.log$') {
+                $foreign.Add($log.FullName)
+            }
+        }
+    }
+
+    if ($foreign.Count) {
+        Write-Host ''
+        Write-Host "The tasks are gone, but '$folder' was left alone: it holds files this tool did not create." -ForegroundColor Yellow
+        foreach ($f in ($foreign | Select-Object -First 10)) { Write-Host "  $f" -ForegroundColor Yellow }
+        if ($foreign.Count -gt 10) {
+            Write-Host ("  ... and {0} more" -f ($foreign.Count - 10)) -ForegroundColor Yellow
+        }
+        Write-Host 'Move what you want to keep out of the way and delete the folder by hand.' -ForegroundColor Yellow
+        return
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($folder, 'Delete the installation folder')) { return }
+
+    try {
+        Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction Stop
+        Write-Host "Deleted: $folder" -ForegroundColor Green
+    } catch {
+        # Most often because the shell running this is standing in that folder,
+        # which holds the directory open. The tasks are already gone either way.
+        Write-Host ''
+        Write-Host "Could not delete '$folder': $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host 'The tasks were removed. If your window is standing in that folder, change' -ForegroundColor Yellow
+        Write-Host 'directory and delete it by hand.' -ForegroundColor Yellow
     }
 }
 
@@ -1027,11 +1109,33 @@ switch ($PSCmdlet.ParameterSetName) {
         exit 0
     }
 
+    'Stop' {
+        if (-not (Test-Administrator)) {
+            Exit-WithError 'This operation requires administrator rights. Open PowerShell with "Run as administrator".'
+        }
+
+        Uninstall-YdkTask -Prefix $TaskPrefix
+
+        # The point of this mode is that it is reversible, so say how.
+        Write-Host ''
+        Write-Host 'Snapshots are no longer taken automatically. The tool itself is still here:'
+        Write-Host ("  {0}" -f $(if ($selfPath) { $selfPath } else { '(unknown path)' }))
+        Write-Host 'Run it with -Install to start again, or with -Uninstall to remove it for good.'
+        exit 0
+    }
+
     'Uninstall' {
         if (-not (Test-Administrator)) {
             Exit-WithError 'This operation requires administrator rights. Open PowerShell with "Run as administrator".'
         }
         Uninstall-YdkTask -Prefix $TaskPrefix
+
+        if (-not $selfPath) {
+            Write-Host 'Could not determine the script''s own path, so no files were removed.' -ForegroundColor Yellow
+            exit 0
+        }
+
+        Remove-YdkInstallFolder -SelfPath $selfPath
         exit 0
     }
 

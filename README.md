@@ -24,6 +24,11 @@ A PowerShell script that sets up scheduled tasks to take shadow copy snapshots o
 4. [Restoring Files From a Snapshot](#restoring-files-from-a-snaphsot)
     1. [Basic Restoring](#basic-restoring)
     2. [Advanced Restoring](#advances-restoring)
+5. [Uninstalling and Reconfiguring](#uninstalling-and-reconfiguring)
+    1. [Pause the automation](#pause-the-automation)
+    2. [Remove the tool completely](#remove-the-tool-completely)
+    3. [Delete the snapshots](#delete-the-snapshots)
+    4. [Change the schedule without touching anything else](#change-the-schedule-without-touching-anything-else)
 
 ## Why this exists?
 
@@ -51,16 +56,17 @@ I had to find a new way to take snapshots of the computers I'm responsible for.
 
 ## Usage
 
-YDK has basically 4 main modes:
+YDK has basically 5 main modes:
 
 | Mode                | What it does           | When                                                                                 |
 |---------------------|------------------------|--------------------------------------------------------------------------------------|
 | *(no parameters)*   | Takes a snapshot       | The scheduled task calls this three times a day; also used for an on-demand snapshot |
-| `-Install`          | Registers the tasks, then takes the first snapshot | Once, by hand                                            |
-| `-Uninstall`        | Removes the tasks      | When needed                                                                          |
+| `-Install`          | Registers the tasks, then takes the first snapshot | Once, by hand; and again whenever the schedule changes   |
+| `-Stop`             | Removes the tasks, keeps every file | Pausing the automation without giving up the tool                       |
+| `-Uninstall`        | Removes the tasks, then the folder it was installed into | Taking the tool off a machine                      |
 | `-Status`           | Prints a health report | To check a machine, or from a monitoring script                                      |
 
-All four modes need an **elevated PowerShell window**.
+All five modes need an **elevated PowerShell window**.
 
 ### Installation
 
@@ -189,7 +195,10 @@ C:\YDK\ydk.ps1 -Install -ShadowStorageMaxSize 25GB -MaxShadowCopies 20
 # Show what would happen without installing anything
 C:\YDK\ydk.ps1 -Install -WhatIf
 
-# Remove the tasks
+# Pause the automation, keep the tool installed
+C:\YDK\ydk.ps1 -Stop
+
+# Remove the tasks and the installation folder
 C:\YDK\ydk.ps1 -Uninstall
 ```
 
@@ -314,6 +323,93 @@ This does not delete the snapshot, only the link.
 ```powershell
 cmd /c rmdir C:\old
 ```
+
+---
+
+## Uninstalling and Reconfiguring
+
+Three things can be taken away separately: the scheduled tasks, the files, and
+the snapshots themselves. All of these need an **elevated PowerShell**.
+
+### Pause the automation
+
+```powershell
+& 'C:\Program Files\YDK\ydk.ps1' -Stop
+```
+
+Removes the scheduled tasks and nothing else — the script, the logs and the
+snapshots all stay where they are. `-Install` starts it again.
+
+### Remove the tool completely
+
+```powershell
+& 'C:\Program Files\YDK\ydk.ps1' -Uninstall
+```
+
+That deletes the tasks first and then the folder the script is running from,
+logs included. Nothing else on the machine is touched — in particular the
+snapshots stay, so nothing you have already captured is lost. Delete those
+separately if you want them gone as well (see below).
+
+`-Uninstall` deletes the folder **only when everything in it was put there by
+this tool**: `ydk.ps1`, `ydk-setup.ps1`, and a `Logs` folder holding nothing but
+`ydk-YYYY-MM-DD.log` files. One file in there that it did not write — a README,
+a `.git` folder, somebody else's script — and it removes the tasks, lists what
+it found and leaves every file alone. That is what keeps
+`.\ydk.ps1 -Uninstall` in a working copy of this repository from deleting the
+repository.
+
+Both `-Stop` and `-Uninstall` take `-TaskPrefix` (default `YDK`), which must
+match the prefix used at install time, and both honour `-WhatIf`, which shows
+what would go without removing anything.
+
+### Delete the snapshots
+
+The tool never deletes a snapshot of its own, because it cannot tell which
+shadow copies belong to it and which to System Restore or a backup product. List
+them first, then delete the ones you mean by `ID`:
+
+```powershell
+Get-CimInstance Win32_ShadowCopy |
+    Sort-Object InstallDate |
+    Select-Object InstallDate, ID, VolumeName
+
+Get-CimInstance Win32_ShadowCopy |
+    Where-Object { $_.ID -eq '{B811B56E-0D78-45C9-8BCF-B62EE2E5DD74}' } |
+    Remove-CimInstance
+```
+
+> [!CAUTION]
+> `vssadmin delete shadows /for=C: /all` is shorter but deletes **every** shadow
+> copy on the volume, System Restore points and any backup product's copies
+> included.
+
+If the point is to stop them piling up rather than to remove particular ones,
+set the ceilings instead and let Windows drop the oldest by itself:
+
+```powershell
+& 'C:\Program Files\YDK\ydk.ps1' -Install -MaxShadowCopies 20 -ShadowStorageMaxSize 25GB -NoInitialSnapshot
+```
+
+### Change the schedule without touching anything else
+
+```powershell
+& 'C:\Program Files\YDK\ydk.ps1' -Install -Time 08:00,20:00 -Volume C -NoInitialSnapshot
+```
+
+`-Install` removes the tasks it registered previously under the same prefix and
+registers the new ones. It never touches the snapshots or `Logs\`, and
+`-NoInitialSnapshot` keeps it from adding a snapshot you did not ask for.
+
+> [!WARNING]
+> If you change `-TaskPrefix`, `-Install` only clears the tasks matching the
+> **new** prefix; the ones under the old prefix stay behind and keep running.
+> Remove them first:
+>
+> ```powershell
+> & 'C:\Program Files\YDK\ydk.ps1' -Stop -TaskPrefix YDK
+> & 'C:\Program Files\YDK\ydk.ps1' -Install -TaskPrefix NEW -NoInitialSnapshot
+> ```
 
 ---
 
